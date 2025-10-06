@@ -637,7 +637,7 @@ class ComplexBatchNorm1d(_ComplexBatchNorm):
         del Crr, Cri, Cii, Rrr, Rii, Rri, det, s, t
         return inp
 
-# Special Layers, Attention, ...
+# Special Layers, Attention, GRU, ...
 
 class ComplexBasicMultiheadAttention(Module):
     """Basic variant of Multihead attention for complex valued data."""
@@ -698,5 +698,180 @@ class ComplexBasicMultiheadAttention(Module):
             output = output.transpose(0, 1)
         
         return output, attention_weights
+
+
+class ComplexGRUCell(Module):
+    """
+    A GRU cell for complex-valued inputs
+    """
+    def __init__(self, input_length, hidden_length):
+        super().__init__()
+        self.input_length = input_length
+        self.hidden_length = hidden_length
+
+        # reset gate components
+        self.linear_reset_w1 = ComplexLinear(
+            self.input_length, self.hidden_length)
+        self.linear_reset_r1 = ComplexLinear(
+            self.hidden_length, self.hidden_length)
+
+        self.linear_reset_w2 = ComplexLinear(
+            self.input_length, self.hidden_length)
+        self.linear_reset_r2 = ComplexLinear(
+            self.hidden_length, self.hidden_length)
+
+        # update gate components
+        self.linear_gate_w3 = ComplexLinear(
+            self.input_length, self.hidden_length)
+        self.linear_gate_r3 = ComplexLinear(
+            self.hidden_length, self.hidden_length)
+
+        self.activation_gate = ComplexSigmoid()
+        self.activation_candidate = ComplexTanh()
+
+    def reset_gate(self, x, h):
+        x_1 = self.linear_reset_w1(x)
+        h_1 = self.linear_reset_r1(h)
+        # gate update
+        reset = self.activation_gate(x_1 + h_1)
+        return reset
+
+    def update_gate(self, x, h):
+        x_2 = self.linear_reset_w2(x)
+        h_2 = self.linear_reset_r2(h)
+        z = self.activation_gate(h_2 + x_2)
+        return z
+
+    def update_component(self, x, h, r):
+        x_3 = self.linear_gate_w3(x)
+        h_3 = r * self.linear_gate_r3(h)  # element-wise multiplication
+        gate_update = self.activation_candidate(x_3 + h_3)
+        return gate_update
+
+    def forward(self, x, h):
+        # Equation 1. reset gate vector
+        r = self.reset_gate(x, h)
+
+        # Equation 2: the update gate - the shared update gate vector z
+        z = self.update_gate(x, h)
+
+        # Equation 3: The almost output component
+        n = self.update_component(x, h, r)
+
+        # Equation 4: the new hidden state
+        h_new = (1 + complex_opposite(z)) * n + z * h  # element-wise multiplication
+        return h_new
+
+class ComplexBNGRUCell(Module):
+    """
+    A BN-GRU cell for complex-valued inputs
+    """
+    
+    def __init__(self, input_length=10, hidden_length=20):
+        super().__init__()
+        self.input_length = input_length
+        self.hidden_length = hidden_length
+
+        # reset gate components
+        self.linear_reset_w1 = ComplexLinear(
+            self.input_length, self.hidden_length)
+        self.linear_reset_r1 = ComplexLinear(
+            self.hidden_length, self.hidden_length)
+
+        self.linear_reset_w2 = ComplexLinear(
+            self.input_length, self.hidden_length)
+        self.linear_reset_r2 = ComplexLinear(
+            self.hidden_length, self.hidden_length)
+
+        # update gate components
+        self.linear_gate_w3 = ComplexLinear(
+            self.input_length, self.hidden_length)
+        self.linear_gate_r3 = ComplexLinear(
+            self.hidden_length, self.hidden_length)
+
+        self.activation_gate = ComplexSigmoid()
+        self.activation_candidate = ComplexTanh()
+
+        self.bn = ComplexBatchNorm2d(1)
+
+    def reset_gate(self, x, h):
+        x_1 = self.linear_reset_w1(x)
+        h_1 = self.linear_reset_r1(h)
+        # gate update
+        reset = self.activation_gate(self.bn(x_1) + self.bn(h_1))
+        return reset
+
+    def update_gate(self, x, h):
+        x_2 = self.linear_reset_w2(x)
+        h_2 = self.linear_reset_r2(h)
+        z = self.activation_gate(self.bn(h_2) + self.bn(x_2))
+        return z
+
+    def update_component(self, x, h, r):
+        x_3 = self.linear_gate_w3(x)
+        h_3 = r * self.bn(self.linear_gate_r3(h))  # element-wise multiplication
+        gate_update = self.activation_candidate(self.bn(self.bn(x_3) + h_3))
+        return gate_update
+
+    def forward(self, x, h):
+        # Equation 1. reset gate vector
+        r = self.reset_gate(x, h)
+
+        # Equation 2: the update gate - the shared update gate vector z
+        z = self.update_gate(x, h)
+
+        # Equation 3: The almost output component
+        n = self.update_component(x, h, r)
+
+        # Equation 4: the new hidden state
+        h_new = (1 + complex_opposite(z)) * n + z * h  # element-wise multiplication
+        return h_new
+
+class ComplexGRU(Module):
+    def __init__(self, input_size, hidden_size, num_layers=1, bias=True,
+                 batch_first=False, dropout=0, bidirectional=False):
+        super().__init__()
+
+        self.gru_re = GRU(input_size=input_size, hidden_size=hidden_size,
+                            num_layers=num_layers, bias=bias,
+                            batch_first=batch_first, dropout=dropout,
+                            bidirectional=bidirectional)
+        self.gru_im = GRU(input_size=input_size, hidden_size=hidden_size,
+                            num_layers=num_layers, bias=bias,
+                            batch_first=batch_first, dropout=dropout,
+                            bidirectional=bidirectional)
+
+    def forward(self, x):
+        real, state_real = self._forward_real(x)
+        imaginary, state_imag = self._forward_imaginary(x)
+
+        output = torch.complex(real, imaginary)
+        state = torch.complex(state_real, state_imag)
+
+        return output, state
+
+    def forward(self, x):
+        r2r_out = self.gru_re(x.real)[0]
+        r2i_out = self.gru_im(x.real)[0]
+        i2r_out = self.gru_re(x.imag)[0]
+        i2i_out = self.gru_im(x.imag)[0]
+        real_out = r2r_out - i2i_out
+        imag_out = i2r_out + r2i_out 
+
+        return torch.complex(real_out, imag_out), None
+
+    def _forward_real(self, x):
+        real_real, h_real = self.gru_re(x.real)
+        imag_imag, h_imag = self.gru_im(x.imag)
+        real = real_real - imag_imag
+
+        return real, torch.complex(h_real, h_imag)
+
+    def _forward_imaginary(self, x):
+        imag_real, h_real = self.gru_re(x.imag)
+        real_imag, h_imag = self.gru_im(x.real)
+        imaginary = imag_real + real_imag
+
+        return imaginary, torch.complex(h_real, h_imag)
 
 
