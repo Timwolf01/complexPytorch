@@ -24,7 +24,8 @@ from complexLayers import (
     NaiveComplexLayerNorm,
     NaiveComplexBatchNorm1d, ComplexBatchNorm1d,
     NaiveComplexBatchNorm2d, ComplexBatchNorm2d,
-    ComplexBasicMultiheadAttention
+    ComplexBasicMultiheadAttention,
+    ComplexGRUCell, ComplexGRU, ComplexBNGRUCell, ComplexLSTM #except BNGRUCell all exist in normal pytorch as complex
 )
 
 

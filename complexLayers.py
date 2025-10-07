@@ -699,7 +699,7 @@ class ComplexBasicMultiheadAttention(Module):
         
         return output, attention_weights
 
-
+# exists in plain pytorch for complex
 class ComplexGRUCell(Module):
     """
     A GRU cell for complex-valued inputs
@@ -827,6 +827,7 @@ class ComplexBNGRUCell(Module):
         h_new = (1 + complex_opposite(z)) * n + z * h  # element-wise multiplication
         return h_new
 
+# exists in plain pytorch for complex
 class ComplexGRU(Module):
     def __init__(self, input_size, hidden_size, num_layers=1, bias=True,
                  batch_first=False, dropout=0, bidirectional=False):
@@ -873,5 +874,63 @@ class ComplexGRU(Module):
         imaginary = imag_real + real_imag
 
         return imaginary, torch.complex(h_real, h_imag)
+
+# exists in plain pytorch for complex
+class ComplexLSTM(Module):
+    def __init__(self, input_size, hidden_size, num_layers=1, bias=True,
+                 batch_first=False, dropout=0, bidirectional=False):
+        super().__init__()
+        self.num_layer = num_layers
+        self.hidden_size = hidden_size
+        self.batch_dim = 0 if batch_first else 1
+        self.bidirectional = bidirectional
+
+        self.lstm_re = LSTM(input_size=input_size, hidden_size=hidden_size,
+                            num_layers=num_layers, bias=bias,
+                            batch_first=batch_first, dropout=dropout,
+                            bidirectional=bidirectional)
+        self.lstm_im = LSTM(input_size=input_size, hidden_size=hidden_size,
+                            num_layers=num_layers, bias=bias,
+                            batch_first=batch_first, dropout=dropout,
+                            bidirectional=bidirectional)
+    def forward(self, x):
+        real, state_real = self._forward_real(x)
+        imaginary, state_imag = self._forward_imaginary(x)
+
+        output = torch.complex(real, imaginary)
+
+        return output, (state_real, state_imag)
+
+    def _forward_real(self, x):
+        h_real, h_imag, c_real, c_imag = self._init_state(self._get_batch_size(x), x.is_cuda)
+        real_real, (h_real, c_real) = self.lstm_re(x.real, (h_real, c_real))
+        imag_imag, (h_imag, c_imag) = self.lstm_im(x.imag, (h_imag, c_imag))
+        real = real_real - imag_imag
+        return real, ((h_real, c_real), (h_imag, c_imag))
+
+    def _forward_imaginary(self, x):
+        h_real, h_imag, c_real, c_imag = self._init_state(self._get_batch_size(x), x.is_cuda)
+        imag_real, (h_real, c_real) = self.lstm_re(x.imag, (h_real, c_real))
+        real_imag, (h_imag, c_imag) = self.lstm_im(x.real, (h_imag, c_imag))
+        imaginary = imag_real + real_imag
+
+        return imaginary, ((h_real, c_real), (h_imag, c_imag))
+
+    def _init_state(self, batch_size, to_gpu=False):
+        dim_0 = 2 if self.bidirectional else 1
+        dims = (dim_0, batch_size, self.hidden_size)
+
+        h_real, h_imag, c_real, c_imag = [
+            torch.zeros(dims) for i in range(4)]
+
+        if to_gpu:
+            h_real, h_imag, c_real, c_imag = [
+                t.cuda() for t in [h_real, h_imag, c_real, c_imag]]
+            
+
+        return h_real, h_imag, c_real, c_imag
+    
+    def _get_batch_size(self, x):
+        return x.size(self.batch_dim)
 
 
